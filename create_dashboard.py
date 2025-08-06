@@ -4,7 +4,7 @@ C‑PIP multi‑site dashboard  (main REDCap export only)
 
 • Baseline (T1) rows only
 • Exactly one row per participant – the row that answers the *most* key fields
-• Writes ./figs/dashboard.png  (6‑panel overview)
+• Writes ./figs/dashboard_sp.png  (6‑panel overview)
 """
 
 import sys, glob, re
@@ -53,9 +53,19 @@ df_main = pd.concat([load_csv(p) for p in paths], ignore_index=True)
 non_repeat = df_main[df_main["redcap_repeat_instrument"].isna()].copy()
 
 # columns later used in the panels
-SEX_COL    = pick_first(non_repeat, ["sex","demo_sex","caregiver_sex"], required=True)
-GENDER_COL = pick_first(non_repeat, ["gender","demo_gender","demo_cg_gender"], required=True)
-ETH_COLS   = [c for c in non_repeat.columns if re.match(r"(demo_|demo_cg_)?ethnicity___\d+", c)]
+SEX_COL    = pick_first(non_repeat, ["sex","demo_sex"], required=True)
+GENDER_COL = pick_first(non_repeat, ["gender","demo_gender","gender_oth"], required=True)
+ETH_COLS   = [c for c in non_repeat.columns if re.match(r"(demo_)?ethnicity___\d+", c)]
+
+# calculate total household income from demo_cg_income and demo_cg_prtnr_income
+if "demo_cg_income" in non_repeat.columns and "demo_cg_prtnr_income" in non_repeat.columns:
+    non_repeat["demo_cg_income"] = non_repeat["demo_cg_income"].fillna(0) + non_repeat["demo_cg_prtnr_income"].fillna(0)
+elif "demo_cg_income" in non_repeat.columns:
+    non_repeat["demo_cg_income"] = non_repeat["demo_cg_income"]
+elif "demo_cg_prtnr_income" in non_repeat.columns:
+    non_repeat["demo_cg_income"] = non_repeat["demo_cg_prtnr_income"]
+else:
+    non_repeat["demo_cg_income"] = np.nan
 
 KEY_VARS = ["youth_age_y", "youth_age_m", SEX_COL, GENDER_COL, "demo_cg_income"] + ETH_COLS
 
@@ -70,6 +80,7 @@ def best_baseline_rows(df: pd.DataFrame) -> pd.DataFrame:
     return best.reset_index(drop=True)
 
 baseline = best_baseline_rows(non_repeat)
+# print(baseline[["site","record_id"] + KEY_VARS].head(50))
 
 # ────────────────── DERIVED DEMOGRAPHIC FIELDS ─────────────────────────────
 def _age_years(row):
@@ -80,9 +91,9 @@ def _age_years(row):
 
 baseline["age_years"] = baseline.apply(_age_years, axis=1)
 
-sex_map    = {1:"Male",2:"Female",3:"Intersex / Non-binary",777:"Unknown",888:"Prefer not to answer"}
+sex_map    = {1:"Male",2:"Female",3:"Intersex / Non-binary",777:"Unknown",888:"Prefer not to answer", np.nan:"NA"}
 gender_map = {1:"Boy/Man",2:"Girl/Woman",3:"Non-binary",4:"Two-spirit",5:"Another",
-              6:"Questioning",777:"Unknown",888:"Prefer not to answer"}
+              6:"Questioning",777:"Unknown",888:"Prefer not to answer", np.nan:"NA"}
 income_map = {1:"Under $10k",2:"$10‑19k",3:"$20‑39k",4:"$40‑59k",5:"$60‑79k",
               6:"$80‑99k",7:"$100‑124k",8:"$125‑149k",9:"$150‑199k",
               10:"$200‑299k",11:"$300‑399k",12:"$400k+",777:"Unknown",888:"Prefer not to say"}
@@ -90,6 +101,8 @@ income_map = {1:"Under $10k",2:"$10‑19k",3:"$20‑39k",4:"$40‑59k",5:"$60‑
 baseline["sex_lbl"]    = baseline[SEX_COL].map(sex_map)
 baseline["gender_lbl"] = baseline[GENDER_COL].map(gender_map)
 baseline["income_lbl"] = baseline["demo_cg_income"].map(income_map)
+
+# print(baseline)
 
 # ────────── Ethnicity (checkbox melt) ──────────
 if ETH_COLS:
@@ -107,6 +120,16 @@ if ETH_COLS:
 else:
     eth_long = None
 
+# aggregate ethnicity as White/Non-white
+if eth_long is not None:
+    eth_long["is_white"] = eth_long["label"].apply(lambda x: x == "White")
+    eth_long = (eth_long.groupby(["site","record_id","is_white"])["label"]
+                .apply(lambda x: ", ".join(sorted(x.unique())))
+                .reset_index(name="label"))
+    eth_long["label"] = eth_long["label"].str.replace("White, ","", regex=False)
+    eth_wide = (eth_long.pivot(index=["site","record_id"], columns="is_white", values="label")
+                .reset_index().rename(columns={True: "White", False: "Non-white"}))
+                    
 # ────────── MRI baseline rows (deduped) ──────────
 mri_base = df_main.loc[
     (df_main["redcap_event_name"] == "t1_arm_1") &
@@ -130,11 +153,59 @@ comp  = (mri_base[mri_base["mri_complete"] == 2]
                   .rename("cum").reset_index().assign(status="Completed"))
 timeline = pd.concat([sched, comp], ignore_index=True)
 
+# ────────── sanity‑check counts ──────────
+def _count_non_na(column: str) -> pd.Series:
+    """# baseline participants per site with a non‑NA in `column`."""
+    return (baseline[baseline[column].notna()]
+            .groupby("site")["record_id"]
+            .nunique())
+
+counts = pd.DataFrame({
+    "Total available counts": baseline.groupby("site")["record_id"].nunique(),
+    "Age non‑NA":          _count_non_na("age_years"),
+    "Sex non‑NA":          _count_non_na("sex_lbl"),
+    "Gender non‑NA":       _count_non_na("gender_lbl"),
+    "Income non‑NA":       _count_non_na("income_lbl"),
+})
+
+# Ethnicity: at least one checkbox ticked (==1)
+if eth_long is not None:
+    eth_counts = (eth_long.groupby("site")["record_id"]
+                          .nunique()
+                          .rename("Ethnicity non‑NA"))
+    counts = counts.join(eth_counts, how="left")
+
+counts = counts.fillna(0).astype(int)
+
+# ethnicity missing counts
+if eth_long is not None:
+    eth_counts_na = baseline.groupby("site")["record_id"].nunique() - (eth_counts)
+
+na_counts = pd.DataFrame({
+    "Total available counts": baseline.groupby("site")["record_id"].nunique(),
+    "Age NA":          baseline.groupby("site")["record_id"].nunique() - _count_non_na("age_years"),  
+    "Income NA":       baseline.groupby("site")["record_id"].nunique() - _count_non_na("income_lbl"),
+    "Ethnicity NA": eth_counts_na if eth_long is not None else 0,
+})
+
+print("\nParticipant counts used in each baseline panel")
+print(counts.to_string())
+print("\nParticipant counts with missing values (NA)")  
+print(na_counts.to_string())
+print("\nNOTE: All numbers refer to *unique* baseline participants "
+      "after deduplication (one T1 row per participant).")
+
+# save table of missing and total counts
+counts.to_csv(FIGDIR / "dashboard_counts.csv")
+na_counts.to_csv(FIGDIR / "dashboard_counts_na.csv")
+
+
 # ────────── PLOTS ──────────
 sns.set(style="whitegrid")
 FIGDIR.mkdir(exist_ok=True)
-fig, axes = plt.subplots(3, 2, figsize=(14, 13))
-(ax_age, ax_sex), (ax_gender, ax_eth), (ax_inc, ax_cum) = axes
+fig, axes = plt.subplots(4, 2, figsize=(16, 20))
+(ax_cum, ax_age), (ax_gender, ax_sex), (ax_eth, ax_eth_wnw), (ax_inc, ax_nas) = axes
+# (ax_age, ax_sex), (ax_gender, ax_eth), (ax_inc, ax_cum), (ax_eth_wnw, ax_unused) = axes
 
 # Age
 sns.histplot(baseline.dropna(subset=["age_years"]),
@@ -152,7 +223,7 @@ ax_sex.tick_params(axis="x", rotation=45)
 
 # Gender
 order_g = ["Boy/Man","Girl/Woman","Non-binary","Two-spirit",
-           "Another","Questioning","Unknown","Prefer not to answer"]
+           "Another","Questioning","Unknown","Prefer not to answer","NA"]
 sns.countplot(baseline, x="gender_lbl", hue="site",
               palette=SITE_COLOURS, order=order_g, ax=ax_gender)
 ax_gender.set_title("Current gender identity (baseline)")
@@ -170,20 +241,29 @@ else:
     ax_eth.text(0.5,0.5,"Ethnicity\nN/A", ha="center", va="center",
                 fontsize=12, color="grey", transform=ax_eth.transAxes)
 
-# Income
-if not baseline["income_lbl"].dropna().empty:
-    order_inc = [income_map[i] for i in sorted(income_map) if i not in (777,888)]
-    sns.countplot(baseline.dropna(subset=["income_lbl"]), x="income_lbl",
-                  hue="site", palette=SITE_COLOURS,
-                  order=order_inc, ax=ax_inc)
-    ax_inc.set_title("Household income (baseline)")
-    ax_inc.tick_params(axis="x", rotation=45)
-else:
-    ax_inc.axis("off")
-    ax_inc.text(0.5,0.5,"Income\nN/A", ha="center", va="center",
-                fontsize=12, color="grey", transform=ax_inc.transAxes)
+# Ethnicity wide
+# ...existing code...
 
-# MRI timeline
+# Ethnicity wide (White/Non-white only) in ax_eth_wnw
+if 'eth_wide' in locals() and not eth_wide.empty:
+    eth_wide_long = eth_wide.melt(id_vars=["site", "record_id"], 
+                                  value_vars=["White", "Non-white"],
+                                  var_name="Ethnicity", value_name="Label")
+    eth_wide_long = eth_wide_long[eth_wide_long["Label"].notna() & (eth_wide_long["Label"] != "")]
+    eth_counts = (eth_wide_long.groupby(["site", "Ethnicity"])["record_id"]
+                  .nunique()
+                  .reset_index(name="Count"))
+    sns.barplot(data=eth_counts, x="Ethnicity", y="Count", hue="site", palette=SITE_COLOURS, ax=ax_eth_wnw)
+    ax_eth_wnw.set_title("Ethnicity (White/Non-white) by site")
+    ax_eth_wnw.set_ylabel("Participant count")
+    ax_eth_wnw.set_xlabel("Ethnicity group")
+    ax_eth_wnw.tick_params(axis="x", rotation=0)
+else:
+    ax_eth_wnw.axis("off")
+    ax_eth_wnw.text(0.5,0.5,"Ethnicity\nN/A", ha="center", va="center",
+                    fontsize=12, color="grey", transform=ax_eth_wnw.transAxes)
+
+# MRI timeline (keep this on ax_cum)
 if not timeline.empty:
     sns.lineplot(timeline, x="mri_date", y="cum",
                  hue="site", style="status",
@@ -203,37 +283,36 @@ else:
     ax_cum.text(0.5,0.5,"MRI timeline\nN/A", ha="center", va="center",
                 fontsize=12, color="grey", transform=ax_cum.transAxes)
 
+# Income
+if not baseline["income_lbl"].dropna().empty:
+    order_inc = [income_map[i] for i in sorted(income_map) if i not in (777,888)]
+    sns.countplot(baseline.dropna(subset=["income_lbl"]), x="income_lbl",
+                  hue="site", palette=SITE_COLOURS,
+                  order=order_inc, ax=ax_inc)
+    ax_inc.set_title("Household income (baseline)")
+    ax_inc.tick_params(axis="x", rotation=45)
+else:
+    ax_inc.axis("off")
+    ax_inc.text(0.5,0.5,"Income\nN/A", ha="center", va="center",
+                fontsize=12, color="grey", transform=ax_inc.transAxes)
+
+
+# add missing counts to the last panel
+if not na_counts.empty:
+    na_counts = na_counts.reset_index().melt(id_vars="site", var_name="Metric", value_name="Count")
+    sns.barplot(data=na_counts, x="Metric", y="Count", hue="site",
+                palette=SITE_COLOURS, ax=ax_nas)
+    ax_nas.set_title("Missing counts per panel")
+    ax_nas.set_ylabel("Count")
+    ax_nas.set_xlabel("Panel")
+    ax_nas.tick_params(axis="x", rotation=45)
+else:
+    ax_nas.axis("off")
+    ax_nas.text(0.5,0.5,"Missing counts\nN/A", ha="center", va="center",
+                fontsize=12, color="grey", transform=ax_nas.transAxes)  
+
+
 fig.tight_layout()
-fig.savefig(FIGDIR / "dashboard.png", dpi=300)
+fig.savefig(FIGDIR / "dashboard_sp.png", dpi=300)
 plt.close(fig)
-print(f"✓ Dashboard saved → {FIGDIR/'dashboard.png'}")
-
-# ────────── sanity‑check counts ──────────
-def _count_non_na(column: str) -> pd.Series:
-    """# baseline participants per site with a non‑NA in `column`."""
-    return (baseline[baseline[column].notna()]
-            .groupby("site")["record_id"]
-            .nunique())
-
-counts = pd.DataFrame({
-    "Total baseline rows": baseline.groupby("site")["record_id"].nunique(),
-    "Age non‑NA":          _count_non_na("age_years"),
-    "Sex non‑NA":          _count_non_na("sex_lbl"),
-    "Gender non‑NA":       _count_non_na("gender_lbl"),
-    "Income non‑NA":       _count_non_na("income_lbl"),
-})
-
-# Ethnicity: at least one checkbox ticked (==1)
-if eth_long is not None:
-    eth_counts = (eth_long.groupby("site")["record_id"]
-                          .nunique()
-                          .rename("Ethnicity non‑NA"))
-    counts = counts.join(eth_counts, how="left")
-
-counts = counts.fillna(0).astype(int)
-
-print("\nParticipant counts used in each baseline panel")
-print(counts.to_string())
-print("\nNOTE: All numbers refer to *unique* baseline participants "
-      "after deduplication (one T1 row per participant).")
-
+print(f"✓ Dashboard saved → {FIGDIR/'dashboard_sp.png'}")
