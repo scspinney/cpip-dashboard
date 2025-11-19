@@ -38,3 +38,4 @@ env/
 
 # Misc
 *.swp
+pipeline_monolith.py
