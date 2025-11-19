@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+
+# Data
+*.csv
+*.tsv
+*.xlsx
+*.pdf
+*.png
+*.jpg
+*.svg
+*.zip
+
+# Logs & artifacts
+*.log
+*.bak
+*.tmp
+
+# IDE
+.vscode/
+.idea/
+
+# Misc
+*.swp
