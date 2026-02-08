@@ -132,40 +132,54 @@ def plot_mh_panels(baseline: pd.DataFrame) -> None:
     plt.close()
 
     # ----------------- HEATMAP with NO DIAGNOSIS row -----------------
-    no_row = pd.DataFrame([no_dx_counts], index=["No diagnosis"])
+    no_row = pd.DataFrame(
+        [no_dx_counts.reindex(heat.columns, fill_value=0)], index=["No diagnosis"]
+    )
     heat_all = pd.concat([heat, no_row], axis=0)
 
     # Two masks: highlight "No diagnosis" separately
-    row_is_no = (heat_all.index == "No diagnosis")
-    mask_no = np.tile(~row_is_no[:, None], (1, heat_all.shape[1]))
-    mask_rest = ~mask_no
+    row_is_no_dx = (heat_all.index.to_numpy() == "No diagnosis")
+    mask_main = np.tile(row_is_no_dx[:, None], (1, heat_all.shape[1]))
+    mask_nodx = ~mask_main
 
     # Use 2-colormap overlay trick
     from matplotlib.colors import ListedColormap
-    nodx_cmap = ListedColormap(["#2b0000"])
+    fixed_nodx_cmap = ListedColormap(["#2b0000"])
 
     fig, ax = plt.subplots(figsize=(10, 10))
     sns.heatmap(
         heat_all,
-        mask=mask_rest,
+        mask=mask_main,
         annot=True, fmt=".0f",
         cmap="Reds",
         cbar=True,
-        cbar_kws={'label':'Count'},
+        cbar_kws={'label':'Number of participants'},
+        linewidths=.5,
+        linecolor='gray',
         ax=ax
     )
     sns.heatmap(
         heat_all,
-        mask=mask_no,
+        mask=mask_nodx,
         annot=True, fmt=".0f",
-        cmap=nodx_cmap,
+        cmap=fixed_nodx_cmap,
         cbar=False,
         linewidths=.5,
         linecolor='gray',
         ax=ax
     )
-    ax.set_title("Diagnoses by site (+ No diagnosis)", fontsize=16)
-    fig.tight_layout()
+    ax.set_title("Counts of diagnoses by site", fontsize=16, pad=22)
+    ax.text(
+        0.5,
+        1.025,
+        "Participants can have multiple diagnoses",
+        ha="center",
+        va="top",
+        transform=ax.transAxes,
+        fontsize=11,
+        color="black",
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
     fig.savefig(FIGDIR / "mh_heatmap_counts_with_no_dx.png", dpi=300)
     fig.savefig(FIGDIR / "dashboard_mh_heatmap_update.png", dpi=300)
     plt.close(fig)

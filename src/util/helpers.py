@@ -185,6 +185,7 @@ def add_image_page(pp: PdfPages, img_path: Path, title: Optional[str] = None):
 
     if title:
         fig.suptitle(title, y=0.98, fontsize=12)
+        fig.subplots_adjust(top=0.95)
 
     pp.savefig(fig, dpi=300)
     plt.close(fig)

@@ -91,16 +91,20 @@ def plot_age_sex(
         palette=MEASURE_COLOURS,
         col="site",
         row="sex_lbl",
-        height=3.0,
-        aspect=1.6,
+        height=2.8,
+        aspect=1.7,
         sharey=True,
+        sharex=False,
         legend_out=True,
     )
 
     g.set_axis_labels("Age group", "Participants")
     g.set_titles("{row_name} — {col_name}")
+    for ax in g.axes.flatten():
+        if ax is not None:
+            ax.tick_params(axis="x", labelrotation=0)
     g.fig.subplots_adjust(top=0.88, hspace=0.35)
-    g.fig.suptitle("Observed vs Target by Age × Sex", fontsize=16)
+    g.fig.suptitle("Observed vs Target by Age × Sex, per site", fontsize=16)
 
     out = figdir / "target_vs_observed_age_by_sex.png"
     g.savefig(out, dpi=300)
@@ -146,6 +150,18 @@ def plot_age_ethnicity(
 
     df["Ethnicity"] = pd.Categorical(df["Ethnicity"], categories=ETHNICITY_ORDER_TARGET, ordered=True)
     df["age_block"] = pd.Categorical(df["age_block"], categories=AGE_BLOCK_ORDER, ordered=True)
+    df = df.sort_values(["Ethnicity", "site", "age_block", "Measure"])
+
+    plt.rcParams.update({
+        "font.size": 14,
+        "axes.titlesize": 16,
+        "axes.labelsize": 16,
+        "xtick.labelsize": 14,
+        "ytick.labelsize": 14,
+        "legend.fontsize": 12,
+        "axes.titleweight": "bold",
+        "axes.labelweight": "bold",
+    })
 
     g = sns.catplot(
         data=df,
@@ -157,16 +173,20 @@ def plot_age_ethnicity(
         palette=MEASURE_COLOURS,
         col="site",
         row="Ethnicity",
-        height=2.2,
-        aspect=1.8,
+        height=2.1,
+        aspect=1.9,
         sharey="row",
+        sharex=False,
         legend_out=True,
     )
 
     g.set_axis_labels("Age group", "Participants")
     g.set_titles("{row_name} — {col_name}")
+    for ax in g.axes.flatten():
+        if ax is not None:
+            ax.tick_params(axis="x", labelrotation=0)
     g.fig.subplots_adjust(top=0.92, hspace=0.45)
-    g.fig.suptitle("Observed vs Target by Age × Ethnicity", fontsize=16)
+    g.fig.suptitle("Observed vs Target by Age × Ethnicity, per site", fontsize=16)
 
     out = figdir / "target_vs_observed_age_by_ethnicity.png"
     g.savefig(out, dpi=300)

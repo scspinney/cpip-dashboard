@@ -54,13 +54,7 @@ def plot_sex_panel(baseline: pd.DataFrame, *, outfile: Path | None = None):
         "Intersex / Non-binary",
         "Unknown",
         "Prefer not to answer",
-        "NA"
     ]
-
-    # Normalize unknowns or missing
-    df = baseline.copy()
-    df["sex_lbl"] = df["sex_lbl"].astype("string")
-    df["sex_lbl"] = df["sex_lbl"].fillna("NA")
 
     # Plot
     sns.set(style="whitegrid")
@@ -73,7 +67,7 @@ def plot_sex_panel(baseline: pd.DataFrame, *, outfile: Path | None = None):
 
     plt.figure(figsize=(12, 7))
     sns.countplot(
-        data=df,
+        data=baseline,
         x="sex_lbl",
         hue="site",
         hue_order=SITE_ORDER,

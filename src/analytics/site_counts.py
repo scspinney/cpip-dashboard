@@ -5,12 +5,12 @@ Compute per-site participant counts used for dashboard panels:
 
 • Total baseline counts  
 • Non-missing counts per demographic dimension  
-• Missing counts per demographic dimension (with effective sex missingness)
+• Missing counts per demographic dimension
 
 This module expects the `baseline` dataframe already enriched with:
     - age_years
     - gender_lbl
-    - sex_missing_effective  (True/False)
+    - sex_lbl
     - income_lbl
     - ethnicity checkboxes OR eth_long melted form
 """
@@ -43,15 +43,15 @@ def compute_site_counts(
     """
     Compute site-level NON-MISSING counts for:
         • Age (age_years)
-        • Sex (effective missingness → sex_missing_effective)
-        • Gender (gender_col provided)
+        • Sex (sex_lbl)
+        • Gender (gender_lbl)
         • Income (income_lbl)
         • Ethnicity (eth_cols list)
 
     Returns a tidy DataFrame with:
         Total available counts
         Age non-NA
-        Sex non-NA  (effective)
+        Sex non-NA
         Gender non-NA
         Income non-NA
         Ethnicity non-NA
@@ -62,16 +62,15 @@ def compute_site_counts(
     # Age
     age_non_na = _count_non_na(baseline, "age_years")
 
-    # Sex (effective):
-    # sex_missing_effective = True means NA → so non-NA = count(False)
-    sex_non_na = (
-        baseline.groupby("site")["sex_missing_effective"]
-        .apply(lambda s: (~s).sum())
-    )
+    # Sex
+    if "sex_lbl" in baseline.columns:
+        sex_non_na = _count_non_na(baseline, "sex_lbl")
+    else:
+        sex_non_na = pd.Series(0, index=total.index)
 
-    # Gender
-    if gender_col and (gender_col in baseline.columns):
-        gender_non_na = _count_non_na(baseline, gender_col)
+    # Gender (monolith parity uses mapped gender labels)
+    if "gender_lbl" in baseline.columns:
+        gender_non_na = _count_non_na(baseline, "gender_lbl")
     else:
         gender_non_na = pd.Series(0, index=total.index)
 
@@ -96,7 +95,7 @@ def compute_site_counts(
     out = pd.DataFrame({
         "Total available counts": total,
         "Age non-NA": age_non_na.reindex(total.index, fill_value=0),
-        "Sex non-NA (effective)": sex_non_na.reindex(total.index, fill_value=0),
+        "Sex non-NA": sex_non_na.reindex(total.index, fill_value=0),
         "Gender non-NA": gender_non_na.reindex(total.index, fill_value=0),
         "Income non-NA": income_non_na.reindex(total.index, fill_value=0),
         "Ethnicity non-NA": eth_non_na.reindex(total.index, fill_value=0),
@@ -131,7 +130,7 @@ def compute_missing_counts(
 
     out["Total available counts"] = total
     out["Age NA"]       = total - site_counts["Age non-NA"]
-    out["Sex NA"]       = total - site_counts["Sex non-NA (effective)"]
+    out["Sex NA"]       = total - site_counts["Sex non-NA"]
     out["Gender NA"]    = total - site_counts["Gender non-NA"]
     out["Income NA"]    = total - site_counts["Income non-NA"]
     out["Ethnicity NA"] = total - site_counts["Ethnicity non-NA"]

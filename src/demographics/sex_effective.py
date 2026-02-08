@@ -21,20 +21,13 @@ def add_effective_sex(
     parent_form_col: str | None,
 ) -> pd.DataFrame:
     """
-    Compute EFFECTIVE sex assigned at birth following CPIP instrument logic:
+    Compute EFFECTIVE sex assigned at birth (monolith parity):
 
     RULES:
-    - If age >= 11:
-          expected reporter = youth
-          use youth sex ONLY if youth form is complete AND a valid value exists
-    - If age < 11:
-          expected reporter = parent
-          use parent sex ONLY if parent form is complete AND a valid value exists
-    - Fallbacks:
-          if expected form incomplete, DO NOT mark as missing
-          if youth missing but parent answered → use parent
+    - If youth value is present and valid, use youth.
+    - Else if parent value is present and valid, use parent.
     - Missing only when:
-          expected form is completed AND no valid value exists
+          no valid value exists and expected form is completed.
     """
 
     df = baseline.copy()
@@ -77,17 +70,9 @@ def add_effective_sex(
     # Effective sex logic
     # ------------------------------
     def _effective_sex(row):
-        # Expected youth reporter
-        if row["expected_youth"]:
-            if row["youth_form_complete"] and row["sex_youth_raw"] in SEX_VALID:
-                return int(row["sex_youth_raw"])
-
-        # Expected parent reporter
-        if row["expected_parent"]:
-            if row["parent_form_complete"] and row["sex_parent_raw"] in SEX_VALID:
-                return int(row["sex_parent_raw"])
-
-        # Fallback: parent answered anyway
+        # Monolith parity: presence-first assignment.
+        if row["sex_youth_raw"] in SEX_VALID:
+            return int(row["sex_youth_raw"])
         if row["sex_parent_raw"] in SEX_VALID:
             return int(row["sex_parent_raw"])
 

@@ -77,29 +77,66 @@ from .mri.timeline import build_mri_baseline, build_timeline
 def _build_obs_eth_age_counts(
     baseline: pd.DataFrame, eth_long: pd.DataFrame
 ) -> pd.DataFrame:
-    """Create observed counts for age × ethnicity overlays."""
+    """Create observed counts for age × ethnicity overlays (monolith parity)."""
     if eth_long.empty or "record_id" not in baseline.columns:
         return pd.DataFrame(columns=["site", "Ethnicity", "age_block", "Observed_N"])
 
-    tmp = (
-        eth_long.merge(baseline[["record_id", "age_years"]], on="record_id", how="left")
-        .assign(
-            Ethnicity=lambda d: d["label"].map(collapse_eth_for_blocks),
-            age_block=lambda d: d["age_years"].apply(to_age_block),
-        )
-        .dropna(subset=["Ethnicity", "age_block"])
+    by_rec = (
+        eth_long.groupby(["site", "record_id"])["label"]
+        .apply(lambda s: sorted(set(s.dropna())))
+        .reset_index(name="labels")
     )
 
-    if tmp.empty:
+    white_ids = set(
+        by_rec.loc[
+            by_rec["labels"].apply(
+                lambda L: ("White" in set(L)) and (len(set(L)) == 1)
+            ),
+            "record_id",
+        ]
+    )
+
+    white_only_df = baseline.loc[
+        baseline["record_id"].isin(white_ids), ["record_id", "site", "age_years"]
+    ].assign(Ethnicity="White", age_block=lambda d: d["age_years"].apply(to_age_block))
+
+    nonwhite = by_rec.loc[
+        by_rec["labels"].apply(lambda L: any(l != "White" for l in set(L)))
+    ].copy()
+    nonwhite = (
+        nonwhite.assign(
+            EthnicityList=nonwhite["labels"].apply(lambda L: [l for l in L if l != "White"])
+        )
+        .explode("EthnicityList")
+        .rename(columns={"EthnicityList": "Ethnicity"})
+        .drop(columns="labels")
+    )
+    nonwhite["Ethnicity"] = nonwhite["Ethnicity"].map(collapse_eth_for_blocks)
+    nonwhite = nonwhite.dropna(subset=["Ethnicity"])
+    nonwhite = (
+        nonwhite.merge(
+            baseline[["record_id", "age_years"]],
+            on="record_id",
+            how="left",
+        ).assign(age_block=lambda d: d["age_years"].apply(to_age_block))
+    )
+
+    parts = []
+    if not white_only_df.empty:
+        parts.append(white_only_df[["site", "Ethnicity", "age_block", "record_id"]])
+    if not nonwhite.empty:
+        parts.append(nonwhite[["site", "Ethnicity", "age_block", "record_id"]])
+    if not parts:
         return pd.DataFrame(columns=["site", "Ethnicity", "age_block", "Observed_N"])
 
-    obs = (
-        tmp.groupby(["site", "Ethnicity", "age_block"], observed=False)["record_id"]
+    obs_eth_age_blocks = (
+        pd.concat(parts, ignore_index=True)
+        .dropna(subset=["age_block"])
+        .groupby(["site", "Ethnicity", "age_block"], observed=False)["record_id"]
         .nunique()
         .reset_index(name="Observed_N")
     )
-
-    return obs
+    return obs_eth_age_blocks
 
 
 SEX_ORDER = [
@@ -108,7 +145,6 @@ SEX_ORDER = [
     "Intersex / Non-binary",
     "Unknown",
     "Prefer not to answer",
-    "NA",
 ]
 
 GENDER_ORDER = [
@@ -162,7 +198,9 @@ def _plot_mri_timeline_axis(ax, timeline: pd.DataFrame):
         y="cum",
         hue="site",
         hue_order=SITE_ORDER,
+        style="status",
         palette=SITE_COLOURS,
+        dashes={"Completed": "", "Scheduled": [2, 2]},
         ax=ax,
     )
 
@@ -172,7 +210,7 @@ def _plot_mri_timeline_axis(ax, timeline: pd.DataFrame):
     ax.set_ylabel("Cumulative T1 MRIs")
     ax.set_xlabel("Date")
     ax.set_title("Baseline MRI visits by site (Completed = 1 or 3)")
-    leg = ax.legend(title="Site", loc="upper left")
+    leg = ax.legend(title="Site / Status", loc="upper left")
     if leg is not None:
         leg.set_frame_on(True)
 
@@ -183,12 +221,9 @@ def _plot_sex_axis(ax, baseline: pd.DataFrame):
         ax.text(0.5, 0.5, "Sex data\nN/A", ha="center", va="center")
         return
 
-    df = baseline.copy()
-    df["sex_lbl_plot"] = df["sex_lbl"].astype("string").fillna("NA")
-
     sns.countplot(
-        data=df,
-        x="sex_lbl_plot",
+        data=baseline,
+        x="sex_lbl",
         hue="site",
         hue_order=SITE_ORDER,
         palette=SITE_COLOURS,
@@ -208,11 +243,11 @@ def _plot_gender_axis(ax, baseline: pd.DataFrame):
         return
 
     df = baseline.copy()
-    df["gender_lbl_plot"] = df["gender_lbl"].astype("string").fillna("NA")
+    df["gender_lbl"] = df["gender_lbl"].fillna("NA")
 
     sns.countplot(
         data=df,
-        x="gender_lbl_plot",
+        x="gender_lbl",
         hue="site",
         hue_order=SITE_ORDER,
         order=GENDER_ORDER,
@@ -326,13 +361,22 @@ def _plot_missingness_axis(ax, missing_df: pd.DataFrame):
         .melt(id_vars="site", var_name="Metric", value_name="Count")
     )
 
+    label_map = {
+        "Age NA": "Age",
+        "Sex NA": "Sex",
+        "Gender NA": "Gender",
+        "Income NA": "Income",
+        "Ethnicity NA": "Ethnicity",
+    }
+    na_long = na_long[na_long["Metric"].isin(label_map.keys())].copy()
+    na_long["Metric"] = na_long["Metric"].map(label_map)
+
     metric_order = [
-        "Total available counts",
-        "Age NA",
-        "Sex NA",
-        "Gender NA",
-        "Income NA",
-        "Ethnicity NA",
+        "Age",
+        "Sex",
+        "Gender",
+        "Income",
+        "Ethnicity",
     ]
 
     na_long["Metric"] = pd.Categorical(
@@ -348,7 +392,7 @@ def _plot_missingness_axis(ax, missing_df: pd.DataFrame):
         palette=SITE_COLOURS,
         ax=ax,
     )
-    ax.set_title("Missing counts per panel (effective sex)")
+    ax.set_title("Missing counts per panel")
     ax.set_xlabel("Panel")
     ax.set_ylabel("Missing count")
     ax.tick_params(axis="x", rotation=25)
@@ -366,7 +410,7 @@ def build_dashboard_figure(
     plt.rcParams.update(
         {
             "font.size": 14,
-            "axes.titlesize": 18,
+            "axes.titlesize": 21,
             "axes.labelsize": 18,
             "xtick.labelsize": 16,
             "ytick.labelsize": 16,
@@ -417,6 +461,7 @@ def main(argv=None):
     youth_sex_col = "sex" if "sex" in non_repeat.columns else None
     parent_sex_col = "demo_sex" if "demo_sex" in non_repeat.columns else None
     gender_col = pick_first(non_repeat, ["gender", "demo_gender", "gender_oth"])
+    gender_label_col = "demo_gender" if "demo_gender" in non_repeat.columns else gender_col
     eth_cols = [c for c in non_repeat.columns if "ethnicity___" in c]
 
     # Form-completion columns
@@ -478,7 +523,7 @@ def main(argv=None):
         youth_form_col,
         parent_form_col,
     )
-    baseline = add_gender_label(baseline, gender_col)
+    baseline = add_gender_label(baseline, gender_label_col)
 
     income_map = {
         1: "Under $10k",
@@ -523,7 +568,7 @@ def main(argv=None):
         baseline,
         eth_cols,
         SITE_ORDER,
-        gender_col,
+        "gender_lbl", #gender_col,
     )
     missing_df = missing_df.fillna(0).astype(int)
     missing_df.to_csv(FIGDIR / "dashboard_counts_na.csv")
@@ -557,7 +602,7 @@ def main(argv=None):
     # 8) PDF
     # ──────────────────────────────────────────────────────────────
     preferred = [
-        ("dashboard.png", "6-panel overview"),
+        ("dashboard.png", ""),
         ("dashboard_mri_by_age_fixed.png", "MRI sessions by age group"),
         ("target_vs_observed_age_by_sex.png", "Observed vs Target — Age × Sex"),
         (

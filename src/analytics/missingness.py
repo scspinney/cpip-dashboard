@@ -105,13 +105,22 @@ def plot_missingness_panel(
         .melt(id_vars="site", var_name="Metric", value_name="Count")
     )
 
+    label_map = {
+        "Age NA": "Age",
+        "Sex NA": "Sex",
+        "Gender NA": "Gender",
+        "Income NA": "Income",
+        "Ethnicity NA": "Ethnicity",
+    }
+    na_long = na_long[na_long["Metric"].isin(label_map.keys())].copy()
+    na_long["Metric"] = na_long["Metric"].map(label_map)
+
     metric_order = [
-        "Total available counts",
-        "Age NA",
-        "Sex NA",
-        "Gender NA",
-        "Income NA",
-        "Ethnicity NA",
+        "Age",
+        "Sex",
+        "Gender",
+        "Income",
+        "Ethnicity",
     ]
 
     na_long["Metric"] = pd.Categorical(

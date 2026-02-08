@@ -26,6 +26,7 @@ env/
 *.jpg
 *.svg
 *.zip
+src/reports/
 
 # Logs & artifacts
 *.log

@@ -49,18 +49,15 @@ def plot_gender_panel(baseline: pd.DataFrame, outdir: Path):
     # Category order (consistent across sites)
     gender_order = [
         "Boy/Man", "Girl/Woman", "Non-binary", "Two-spirit",
-        "Another", "Questioning", "Unknown", "Prefer not to answer"
+        "Another", "Questioning", "Unknown", "Prefer not to answer", "NA"
     ]
-
-    # Add explicit NA category if needed
-    tmp = baseline.copy()
-    tmp["gender_lbl"] = tmp["gender_lbl"].fillna("NA")
-    if "NA" not in gender_order:
-        gender_order.append("NA")
 
     # --- Plot ---
     sns.set(style="whitegrid")
     sns.set_context("talk")
+
+    tmp = baseline.copy()
+    tmp["gender_lbl"] = tmp["gender_lbl"].fillna("NA")
 
     plt.figure(figsize=(14, 7))
     ax = sns.countplot(
