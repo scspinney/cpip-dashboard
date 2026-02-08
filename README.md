@@ -19,22 +19,29 @@ The pipeline:
 
 ## Requirements
 
-- Python `>=3.10` recommended.
-- Packages: `pandas`, `numpy`, `matplotlib`, `seaborn`.
+- Python `>=3.10`.
+- Runtime dependencies are pinned in `pyproject.toml`.
 
-Create environment and install:
+Create environment and install (local checkout):
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
 pip install -e .
-pip install pandas numpy matplotlib seaborn
+```
+
+Install directly from GitHub:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install "git+https://github.com/scspinney/cpip-dashboard.git@main"
 ```
 
 Notes:
 
-- `pyproject.toml` currently defines package metadata but does not pin runtime deps.
 - If you run into matplotlib cache permission warnings, set:
   - `export MPLCONFIGDIR=$(pwd)/.mplconfig`
 
