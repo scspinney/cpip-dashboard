@@ -1,9 +1,5 @@
 # C-PIP Dashboard
 
-Refactored pipeline for generating C-PIP demographic/MRI dashboard figures from REDCap CSV exports.
-
-## What This Repo Does
-
 Main entrypoint:
 
 - `src/pipeline.py`
@@ -134,14 +130,6 @@ All outputs are written under:
 
 - `figs/target_vs_observed_age_by_sex.png`
 - `figs/target_vs_observed_age_by_ethnicity.png`
-
-## Other Scripts
-
-- `pipeline_monolith.py`: legacy monolithic version (kept for comparison).
-- `src/reports/age_0_9_demographics_tables.py`: optional report script that reads:
-  - `figs/age_0_9_participants_by_site_COMPLETE.csv`
-  and writes summary CSV tables into:
-  - `reports/tables/`
 
 ## Troubleshooting
 
