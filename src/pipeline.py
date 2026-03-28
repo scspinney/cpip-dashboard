@@ -1,6 +1,8 @@
 # src/pipeline.py
 import sys
+import re
 from pathlib import Path
+from typing import List, Optional
 
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -44,13 +46,14 @@ from .data_loading.baseline_selector import build_key_vars, best_baseline_rows
 # ──────────────────────────────────────────────────────────────
 # DEMOGRAPHICS
 # ──────────────────────────────────────────────────────────────
-from .demographics.age import add_age_years, to_age_block
+from .demographics.age import add_age_years, to_age_block, AGE_BLOCK_ORDER
 from .demographics.sex_effective import add_effective_sex
 from .demographics.gender import add_gender_label
 from .demographics.ethnicity import (
     build_eth_long,
     build_white_nonwhite_panel,
     collapse_eth_for_blocks,
+    collapse_eth_for_totals,
 )
 
 # ──────────────────────────────────────────────────────────────
@@ -70,8 +73,9 @@ from .plots.ethnicity_panel import build_ethnicity_panels
 from .plots.income_panel import plot_income_panel, INCOME_ORDER
 from .plots.mri_panels import save_mri_by_age_figure
 from .plots.targets_vs_observed import plot_age_sex, plot_age_ethnicity
-from .plots.mh_panels import plot_mh_panels
+from .plots.mh_panels import plot_mh_panels, CFQ_LABELS, CFQ_VARS
 from .mri.timeline import build_mri_baseline, build_timeline
+from .configs.target_totals import TARGET_TOTALS, ETHNICITY_ORDER_TARGET
 
 
 def _build_obs_eth_age_counts(
@@ -139,6 +143,102 @@ def _build_obs_eth_age_counts(
     return obs_eth_age_blocks
 
 
+def _print_subject_codes_age_0_to_2(baseline: pd.DataFrame):
+    if "age_years" not in baseline.columns:
+        print("ℹ️ age_years missing — cannot list subjects age 0-2.")
+        return
+
+    def _first_non_empty(row: pd.Series, cols: List[str]) -> Optional[str]:
+        for col in cols:
+            if col not in row.index:
+                continue
+            val = row.get(col)
+            if pd.isna(val):
+                continue
+            s = str(val).strip()
+            if s and s.lower() != "nan":
+                return s
+        return None
+
+    def _digits(s: Optional[str]) -> Optional[str]:
+        if s is None:
+            return None
+        m = re.findall(r"\d+", s)
+        return m[0] if m else None
+
+    def _subject_num(row: pd.Series) -> Optional[str]:
+        raw = _first_non_empty(row, ["subject_id", "study_id", "numeric_id"])
+        if raw is not None:
+            return _digits(raw)
+
+        rec = _first_non_empty(row, ["record_id"])
+        if rec is None:
+            return None
+        m = re.match(r"^\d+-(\d+)$", rec)
+        return m.group(1) if m else _digits(rec)
+
+    def _family_num(row: pd.Series) -> str:
+        raw = _first_non_empty(row, ["fam_id", "family_id", "fam_numeric_id"])
+        out = _digits(raw) if raw is not None else None
+        return out if out is not None else "unknown"
+
+    def _site_num(row: pd.Series) -> str:
+        raw = _first_non_empty(row, ["site_id", "site_code"])
+        out = _digits(raw) if raw is not None else None
+        if out is not None:
+            return out
+
+        rec = _first_non_empty(row, ["record_id"])
+        if rec is not None:
+            m = re.match(r"^(\d+)-", rec)
+            if m:
+                return m.group(1)
+
+        site_name = _first_non_empty(row, ["site"])
+        site_map = {
+            "Montreal": "1644",
+            "Calgary": "1643",
+            "Toronto": "1645",
+            "montreal": "1644",
+            "calgary": "1643",
+            "toronto": "1645",
+        }
+        return site_map.get(site_name, "0000")
+
+    def _subject_code(row: pd.Series) -> str:
+        existing = _first_non_empty(row, ["subject_code"])
+        if existing is not None:
+            return existing
+
+        sub = _subject_num(row)
+        if sub is None:
+            fallback = _first_non_empty(row, ["subject_id", "study_id", "record_id"])
+            return fallback if fallback is not None else "unknown_subject"
+
+        fam = _family_num(row)
+        site = _site_num(row)
+        # Match existing demo naming style: sub_<study>_ses_1a_fam_<family>_site_<site>
+        return f"sub_{sub}_ses_1a_fam_{fam}_site_{site}"
+
+    mask = baseline["age_years"].between(0, 2, inclusive="both")
+    subject_codes = (
+        baseline.loc[mask]
+        .apply(_subject_code, axis=1)
+        .dropna()
+        .drop_duplicates()
+        .sort_values()
+        .astype(str)
+        .tolist()
+    )
+
+    print(f"Subjects age 0-2 years ({len(subject_codes)}):")
+    if not subject_codes:
+        print("  (none)")
+        return
+    for code in subject_codes:
+        print(f"  - {code}")
+
+
 SEX_ORDER = [
     "Male",
     "Female",
@@ -158,6 +258,303 @@ GENDER_ORDER = [
     "Prefer not to answer",
     "NA",
 ]
+
+
+def _export_age_blocks_by_site(baseline: pd.DataFrame) -> None:
+    age_counts = (
+        baseline.assign(age_block=lambda d: d["age_years"].apply(to_age_block))
+        .dropna(subset=["age_block"])
+        .groupby(["site", "age_block"], observed=False)["record_id"]
+        .nunique()
+        .reset_index(name="Count")
+    )
+    age_counts["site"] = pd.Categorical(
+        age_counts["site"], categories=SITE_ORDER, ordered=True
+    )
+    age_counts["age_block"] = pd.Categorical(
+        age_counts["age_block"], categories=AGE_BLOCK_ORDER, ordered=True
+    )
+    age_counts = age_counts.sort_values(["site", "age_block"]).reset_index(drop=True)
+    age_counts.to_csv(FIGDIR / "age_blocks_by_site.csv", index=False)
+
+
+def _export_counts_by_site(
+    baseline: pd.DataFrame,
+    *,
+    label_col: str,
+    order: List[str],
+    filename: str,
+) -> None:
+    if label_col not in baseline.columns:
+        return
+
+    df = baseline.copy()
+    if label_col == "gender_lbl":
+        df[label_col] = df[label_col].fillna("NA")
+
+    counts = (
+        df.dropna(subset=[label_col])
+        .groupby(["site", label_col], observed=False)["record_id"]
+        .nunique()
+        .reset_index(name="Count")
+    )
+    counts["site"] = pd.Categorical(counts["site"], categories=SITE_ORDER, ordered=True)
+    counts[label_col] = pd.Categorical(counts[label_col], categories=order, ordered=True)
+    counts = counts.sort_values(["site", label_col]).reset_index(drop=True)
+    counts.to_csv(FIGDIR / filename, index=False)
+
+
+def _export_mri_by_age_status_site(
+    df_main: pd.DataFrame,
+    baseline: pd.DataFrame,
+) -> pd.DataFrame:
+    mri_base = build_mri_baseline(df_main)
+    if mri_base.empty:
+        out = pd.DataFrame(columns=["site", "status_collapsed", "age_block", "Count"])
+        out.to_csv(FIGDIR / "mri_by_age_status_site.csv", index=False)
+        return mri_base
+
+    mri_age = mri_base.merge(
+        baseline[["record_id", "site", "age_years"]],
+        on=["record_id", "site"],
+        how="left",
+    )
+    mri_age["age_block"] = mri_age["age_years"].apply(to_age_block)
+
+    counts = (
+        mri_age.dropna(subset=["age_block"])
+        .groupby(["site", "status_collapsed", "age_block"], observed=False)["record_id"]
+        .nunique()
+        .reset_index(name="Count")
+    )
+    counts["site"] = pd.Categorical(counts["site"], categories=SITE_ORDER, ordered=True)
+    counts["status_collapsed"] = pd.Categorical(
+        counts["status_collapsed"],
+        categories=["Completed", "Scheduled"],
+        ordered=True,
+    )
+    counts["age_block"] = pd.Categorical(
+        counts["age_block"], categories=AGE_BLOCK_ORDER, ordered=True
+    )
+    counts = counts.sort_values(["site", "status_collapsed", "age_block"]).reset_index(
+        drop=True
+    )
+    counts.to_csv(FIGDIR / "mri_by_age_status_site.csv", index=False)
+    return mri_base
+
+
+def _export_scanning_rate_last3months(mri_base: pd.DataFrame) -> None:
+    if mri_base.empty:
+        out = pd.DataFrame(
+            columns=[
+                "site",
+                "participants_last_3mo",
+                "weeks_in_period",
+                "active_weeks_in_period",
+                "rate_per_week",
+                "rate_per_active_week",
+            ]
+        )
+        out.to_csv(FIGDIR / "scanning_rate_last3months.csv", index=False)
+        return
+
+    today = pd.Timestamp.now().normalize()
+    start_3mo = today - pd.DateOffset(months=3)
+    recent = mri_base.loc[
+        (mri_base["mri_date"] >= start_3mo)
+        & (mri_base["mri_date"] <= today)
+        & (mri_base["status_collapsed"] == "Completed")
+    ].copy()
+
+    weeks_in_period = (today - start_3mo).days / 7
+    active_weeks_in_period = weeks_in_period * (5 / 7)
+
+    rate_df = (
+        recent.groupby("site")["record_id"]
+        .nunique()
+        .reindex(SITE_ORDER, fill_value=0)
+        .reset_index(name="participants_last_3mo")
+        .assign(
+            weeks_in_period=weeks_in_period,
+            active_weeks_in_period=active_weeks_in_period,
+            rate_per_week=lambda d: d["participants_last_3mo"] / d["weeks_in_period"],
+            rate_per_active_week=lambda d: d["participants_last_3mo"]
+            / d["active_weeks_in_period"],
+        )
+    )
+    rate_df.to_csv(FIGDIR / "scanning_rate_last3months.csv", index=False)
+
+
+def _export_mh_cooccurrence_counts(baseline: pd.DataFrame) -> None:
+    avail = [c for c in CFQ_VARS if c in baseline.columns]
+    if not avail:
+        return
+
+    cfq_bin = baseline[avail].fillna(0).astype(int)
+    co_matrix = cfq_bin.T.dot(cfq_bin)
+    co_matrix.to_csv(FIGDIR / "dashboard_mh_cooccurrence_counts.csv")
+    co_matrix.rename(index=CFQ_LABELS, columns=CFQ_LABELS).to_csv(
+        FIGDIR / "dashboard_mh_cooccurrence_counts_labeled.csv"
+    )
+
+
+def _export_target_vs_observed_age_by_sex(
+    baseline: pd.DataFrame,
+    targets_long: pd.DataFrame,
+) -> None:
+    obs = (
+        baseline.dropna(subset=["sex_lbl", "age_years"])
+        .assign(age_block=lambda d: d["age_years"].apply(to_age_block))
+        .dropna(subset=["age_block"])
+        .query("sex_lbl in ['Male', 'Female']")
+        .groupby(["site", "sex_lbl", "age_block"], observed=False)["record_id"]
+        .nunique()
+        .reset_index(name="Observed_N")
+    )
+    targ = (
+        targets_long.loc[targets_long["Group"].isin(["Male", "Female"])]
+        .dropna(subset=["age_block"])
+        .groupby(["site", "Group", "age_block"], observed=False)["Target_N"]
+        .sum()
+        .reset_index()
+        .rename(columns={"Group": "sex_lbl"})
+    )
+    long = pd.concat(
+        [
+            targ.rename(columns={"Target_N": "N"}).assign(Measure="Target"),
+            obs.rename(columns={"Observed_N": "N"}).assign(Measure="Observed"),
+        ],
+        ignore_index=True,
+    )
+    long["site"] = pd.Categorical(long["site"], categories=SITE_ORDER, ordered=True)
+    long["sex_lbl"] = pd.Categorical(
+        long["sex_lbl"], categories=["Female", "Male"], ordered=True
+    )
+    long["age_block"] = pd.Categorical(
+        long["age_block"], categories=AGE_BLOCK_ORDER, ordered=True
+    )
+    long["Measure"] = pd.Categorical(
+        long["Measure"], categories=["Target", "Observed"], ordered=True
+    )
+    long = long.sort_values(["site", "sex_lbl", "age_block", "Measure"]).reset_index(
+        drop=True
+    )
+    long.to_csv(FIGDIR / "target_vs_observed_age_by_sex.csv", index=False)
+
+
+def _export_target_vs_observed_age_by_ethnicity(
+    baseline: pd.DataFrame,
+    eth_long: pd.DataFrame,
+    targets_long: pd.DataFrame,
+) -> None:
+    obs_eth_age = _build_obs_eth_age_counts(baseline, eth_long)
+    targ_eth = (
+        targets_long.loc[targets_long["Group"].isin(ETHNICITY_ORDER_TARGET)]
+        .dropna(subset=["age_block"])
+        .groupby(["site", "Group", "age_block"], observed=False)["Target_N"]
+        .sum()
+        .reset_index()
+        .rename(columns={"Group": "Ethnicity"})
+    )
+    df = pd.concat(
+        [
+            targ_eth.rename(columns={"Target_N": "N"}).assign(Measure="Target"),
+            obs_eth_age.rename(columns={"Observed_N": "N"}).assign(Measure="Observed"),
+        ],
+        ignore_index=True,
+    )
+    df["site"] = pd.Categorical(df["site"], categories=SITE_ORDER, ordered=True)
+    df["Ethnicity"] = pd.Categorical(
+        df["Ethnicity"], categories=ETHNICITY_ORDER_TARGET, ordered=True
+    )
+    df["age_block"] = pd.Categorical(
+        df["age_block"], categories=AGE_BLOCK_ORDER, ordered=True
+    )
+    df["Measure"] = pd.Categorical(
+        df["Measure"], categories=["Target", "Observed"], ordered=True
+    )
+    df = df.sort_values(["site", "Ethnicity", "age_block", "Measure"]).reset_index(
+        drop=True
+    )
+    df.to_csv(FIGDIR / "target_vs_observed_age_by_ethnicity.csv", index=False)
+
+
+def _export_target_vs_observed_ethnicity_totals(eth_long: pd.DataFrame) -> None:
+    if eth_long.empty:
+        return
+
+    observed = (
+        eth_long.assign(Ethnicity=lambda d: d["label"].map(collapse_eth_for_totals))
+        .dropna(subset=["Ethnicity"])
+        .groupby(["site", "Ethnicity"], observed=False)["record_id"]
+        .nunique()
+        .reset_index(name="Observed_N")
+    )
+
+    target_rows = []
+    for site, payload in TARGET_TOTALS.items():
+        for eth, n in payload.get("Ethnicity", {}).items():
+            target_rows.append({"site": site, "Ethnicity": eth, "Target_N": int(n)})
+    target = pd.DataFrame(target_rows)
+
+    cmp = target.merge(observed, on=["site", "Ethnicity"], how="left").fillna(
+        {"Observed_N": 0}
+    )
+    long = pd.concat(
+        [
+            cmp.rename(columns={"Target_N": "N"}).assign(Measure="Target")[
+                ["site", "Ethnicity", "N", "Measure"]
+            ],
+            cmp.rename(columns={"Observed_N": "N"}).assign(Measure="Observed")[
+                ["site", "Ethnicity", "N", "Measure"]
+            ],
+        ],
+        ignore_index=True,
+    )
+    long["site"] = pd.Categorical(long["site"], categories=SITE_ORDER, ordered=True)
+    long["Ethnicity"] = pd.Categorical(
+        long["Ethnicity"], categories=ETHNICITY_ORDER_TARGET, ordered=True
+    )
+    long["Measure"] = pd.Categorical(
+        long["Measure"], categories=["Target", "Observed"], ordered=True
+    )
+    long = long.sort_values(["site", "Ethnicity", "Measure"]).reset_index(drop=True)
+    long.to_csv(FIGDIR / "target_vs_observed_ethnicity_totals.csv", index=False)
+
+
+def _export_legacy_csvs(
+    baseline: pd.DataFrame,
+    df_main: pd.DataFrame,
+    eth_long: pd.DataFrame,
+    targets_long: pd.DataFrame,
+) -> None:
+    _export_age_blocks_by_site(baseline)
+    _export_counts_by_site(
+        baseline,
+        label_col="sex_lbl",
+        order=SEX_ORDER,
+        filename="sex_effective_by_site.csv",
+    )
+    _export_counts_by_site(
+        baseline,
+        label_col="gender_lbl",
+        order=GENDER_ORDER,
+        filename="gender_by_site.csv",
+    )
+    _export_counts_by_site(
+        baseline,
+        label_col="income_lbl",
+        order=INCOME_ORDER,
+        filename="income_by_site.csv",
+    )
+    mri_base = _export_mri_by_age_status_site(df_main, baseline)
+    _export_scanning_rate_last3months(mri_base)
+    _export_mh_cooccurrence_counts(baseline)
+    _export_target_vs_observed_ethnicity_totals(eth_long)
+
+    if not targets_long.empty:
+        _export_target_vs_observed_age_by_sex(baseline, targets_long)
+        _export_target_vs_observed_age_by_ethnicity(baseline, eth_long, targets_long)
 
 
 def _plot_mri_timeline_axis(ax, timeline: pd.DataFrame):
@@ -516,6 +913,7 @@ def main(argv=None):
     # 4) DERIVED DEMOGRAPHICS
     # ──────────────────────────────────────────────────────────────
     baseline = add_age_years(baseline)
+    _print_subject_codes_age_0_to_2(baseline)
     baseline = add_effective_sex(
         baseline,
         youth_sex_col,
@@ -597,6 +995,8 @@ def main(argv=None):
         plot_age_sex(baseline, targets_long, FIGDIR)
         obs_eth_age = _build_obs_eth_age_counts(baseline, eth_long)
         plot_age_ethnicity(obs_eth_age, targets_long, FIGDIR)
+
+    _export_legacy_csvs(baseline, df_main, eth_long, targets_long)
 
     # ──────────────────────────────────────────────────────────────
     # 8) PDF
